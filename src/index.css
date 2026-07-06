@@ -1,0 +1,31 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Amatic+SC:wght@400;700&display=swap');
+
+@theme {
+  --font-handwriting: 'Caveat', cursive;
+  --font-title: 'Amatic SC', cursive;
+}
+
+body {
+  background-color: #f4ecd8;
+  background-image: 
+    linear-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
+  background-size: 20px 20px;
+  color: #3b2f2f;
+}
+
+/* Efecto de cinta adhesiva */
+.tape {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%) rotate(-2deg);
+  width: 120px;
+  height: 28px;
+  background-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  backdrop-filter: blur(2px);
+  z-index: 10;
+  border-radius: 1px;
+}
