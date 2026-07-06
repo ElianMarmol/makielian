@@ -13,6 +13,44 @@ function App() {
   const fileInputRef = useRef(null);
   const addPhotosInputRef = useRef(null);
 
+  // Backup functions
+  const exportBackup = () => {
+    const data = localStorage.getItem('albumAventuras');
+    if (!data) {
+      alert("No hay datos para exportar.");
+      return;
+    }
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `album-aventuras-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importBackup = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const importedData = JSON.parse(event.target.result);
+        if (Array.isArray(importedData)) {
+          localStorage.setItem('albumAventuras', JSON.stringify(importedData));
+          setLocalPhotos(importedData);
+          alert("¡Álbum restaurado con éxito!");
+        } else {
+          alert("El archivo no tiene el formato correcto.");
+        }
+      } catch (err) {
+        alert("Error al intentar leer el archivo de backup.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
   // Drag and Drop Refs
   const dragItem = useRef(null);
   const dragOverItem = useRef(null);
@@ -356,6 +394,29 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* Footer de Herramientas (Solo visible en el inicio) */}
+      {!activeCategory && (
+        <footer className="text-center pb-12 opacity-40 hover:opacity-100 transition-opacity duration-300 font-sans flex flex-col items-center">
+          <p className="text-[#8c5a35] text-sm mb-3">Opciones del Álbum</p>
+          <div className="flex gap-4">
+            <button 
+              onClick={exportBackup}
+              className="text-xs bg-[#eaddc5] text-[#5c4033] px-4 py-2 rounded-full shadow-sm hover:bg-[#d4a373] hover:text-white transition-colors border border-[#8c5a35]/20"
+              title="Descargar una copia de seguridad de tus fotos"
+            >
+              Exportar Backup
+            </button>
+            <label 
+              className="text-xs bg-[#eaddc5] text-[#5c4033] px-4 py-2 rounded-full shadow-sm hover:bg-[#d4a373] hover:text-white transition-colors cursor-pointer border border-[#8c5a35]/20"
+              title="Cargar un archivo de copia de seguridad"
+            >
+              Importar Backup
+              <input type="file" accept=".json" className="hidden" onChange={importBackup} />
+            </label>
+          </div>
+        </footer>
+      )}
 
       {/* Modal Fotografía Extendida con Edición y Múltiples Fotos */}
       {selectedPhoto && (
