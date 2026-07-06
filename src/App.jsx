@@ -237,15 +237,22 @@ function App() {
   return (
     <div className="min-h-screen font-handwriting selection:bg-[#d4a373] text-[#4a3f35] overflow-x-hidden">
       {/* Portada / Cabecera */}
-      <header className={`text-center px-4 relative flex flex-col items-center ${activeCategory ? 'py-6 md:py-8' : 'py-12 md:py-16'}`}>
+      <header className={`text-center px-4 relative flex flex-col items-center ${activeCategory ? 'py-6 md:py-8' : 'py-6 md:py-10'}`}>
         {!activeCategory ? (
-          <h1 
-            className="text-5xl sm:text-6xl md:text-8xl lg:text-9xl font-title font-bold text-[#8c5a35] tracking-widest drop-shadow-sm cursor-pointer transition-transform hover:scale-105 px-2" 
-            onClick={() => setActiveCategory(null)}
-            title="Volver a la Portada"
-          >
-            AVENTURAS DE MAKI Y ELIAN
-          </h1>
+          <div className="flex flex-col items-center animate-in zoom-in duration-500">
+            <img 
+              src="/logomakielian.jpg" 
+              alt="Maki y Elian Logo" 
+              className="w-32 h-32 md:w-40 md:h-40 object-cover rounded-full shadow-lg mb-4 md:mb-6 border-4 border-[#fffdf5] ring-4 ring-[#8c5a35]/20 hover:scale-105 transition-transform duration-300"
+            />
+            <h1 
+              className="text-5xl sm:text-6xl md:text-8xl lg:text-9xl font-title font-bold text-[#8c5a35] tracking-widest drop-shadow-sm cursor-pointer transition-transform hover:scale-105 px-2" 
+              onClick={() => setActiveCategory(null)}
+              title="Volver a la Portada"
+            >
+              AVENTURAS DE MAKI Y ELIAN
+            </h1>
+          </div>
         ) : (
           <button 
             onClick={() => setActiveCategory(null)}
