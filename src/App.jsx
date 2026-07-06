@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
-import { photos as initialPhotos, categories } from './data';
+import { categories } from './data';
+import { supabase } from './supabase';
 
 function App() {
   const [activeCategory, setActiveCategory] = useState(null);
   const [selectedPhoto, setSelectedPhoto] = useState(null); // This is actually the selected Adventure
   const [localPhotos, setLocalPhotos] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   
   // Modal Edit State
   const [isEditing, setIsEditing] = useState(false);
@@ -13,59 +15,112 @@ function App() {
   const fileInputRef = useRef(null);
   const addPhotosInputRef = useRef(null);
 
-  // Backup functions
-  const exportBackup = () => {
-    const data = localStorage.getItem('albumAventuras');
-    if (!data) {
-      alert("No hay datos para exportar.");
-      return;
-    }
-    const blob = new Blob([data], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `album-aventuras-backup-${new Date().toISOString().slice(0,10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  // Drag and Drop Refs
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+  const isDraggingItem = useRef(false);
 
-  const importBackup = (e) => {
+  // Migration functions
+  const importBackup = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const importedData = JSON.parse(event.target.result);
         if (Array.isArray(importedData)) {
-          localStorage.setItem('albumAventuras', JSON.stringify(importedData));
-          setLocalPhotos(importedData);
-          alert("¡Álbum restaurado con éxito!");
+          alert("Migrando tus fotos a la nube... Esto puede tardar uno o dos minutos. Por favor, no cierres esta pestaña.");
+          
+          for (const adventure of importedData) {
+            const uploadedUrls = [];
+            
+            if (adventure.urls && adventure.urls.length > 0) {
+              for (let i = 0; i < adventure.urls.length; i++) {
+                const dataUrl = adventure.urls[i];
+                
+                if (!dataUrl.startsWith('data:')) {
+                  uploadedUrls.push(dataUrl);
+                  continue;
+                }
+
+                try {
+                  const res = await fetch(dataUrl);
+                  const blob = await res.blob();
+                  const imgFile = new File([blob], `migrated_${Date.now()}_${i}.jpg`, { type: blob.type });
+                  
+                  const fileExt = imgFile.name.split('.').pop();
+                  const fileName = `${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
+                  const filePath = `photos/${fileName}`;
+
+                  const { error: uploadError } = await supabase.storage
+                    .from('album_photos')
+                    .upload(filePath, imgFile);
+                    
+                  if (!uploadError) {
+                    const { data } = supabase.storage.from('album_photos').getPublicUrl(filePath);
+                    uploadedUrls.push(data.publicUrl);
+                  }
+                } catch(err) {
+                  console.error("Error subiendo imagen migrada", err);
+                }
+              }
+            }
+            
+            let dateToUse = new Date().toISOString();
+            if (typeof adventure.id === 'number' && adventure.id > 10000) {
+              dateToUse = new Date(adventure.id).toISOString();
+            }
+            
+            await supabase.from('adventures').insert([{
+              category: adventure.category || 'salidas',
+              descripcion: adventure.descripcion || '',
+              urls: uploadedUrls,
+              created_at: dateToUse
+            }]);
+          }
+          
+          alert("¡Migración completa! Todas tus fotos están seguras en Supabase.");
+          fetchAdventures(); 
         } else {
           alert("El archivo no tiene el formato correcto.");
         }
       } catch (err) {
-        alert("Error al intentar leer el archivo de backup.");
+        console.error(err);
+        alert("Error al procesar el archivo de backup.");
       }
     };
     reader.readAsText(file);
     e.target.value = null;
   };
 
-  // Drag and Drop Refs
-  const dragItem = useRef(null);
-  const dragOverItem = useRef(null);
-  const isDraggingItem = useRef(false);
+  const fetchAdventures = async () => {
+    setIsLoading(true);
+    const { data, error } = await supabase
+      .from('adventures')
+      .select('*')
+      .order('created_at', { ascending: true });
+    
+    if (error) {
+      console.error('Error fetching adventures:', error);
+    } else {
+      setLocalPhotos(data || []);
+    }
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    fetchAdventures();
+  }, []);
 
   const handleDragStart = (e, id) => {
     isDraggingItem.current = true;
     dragItem.current = id;
     
-    // Requerimiento de HTML5 D&D para que funcione en todos los navegadores
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', id);
     
     const target = e.currentTarget;
-    // El setTimeout permite que se cree la imagen "fantasma" antes de cambiar la opacidad
     setTimeout(() => { 
       if (target) target.style.opacity = '0.4'; 
     }, 0);
@@ -77,14 +132,13 @@ function App() {
   };
 
   const handleDragOver = (e) => {
-    e.preventDefault(); // Necesario para permitir el Drop
+    e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleDragEnd = (e) => {
+  const handleDragEnd = async (e) => {
     e.currentTarget.style.opacity = '1';
     
-    // Evitar que el drag dispare un click accidentalmente
     setTimeout(() => {
       isDraggingItem.current = false;
     }, 100);
@@ -95,20 +149,21 @@ function App() {
       return;
     }
 
-    setLocalPhotos(prevPhotos => {
-      const newPhotos = [...prevPhotos];
-      const draggedIndex = newPhotos.findIndex(p => p.id === dragItem.current);
-      const overIndex = newPhotos.findIndex(p => p.id === dragOverItem.current);
+    const newPhotos = [...localPhotos];
+    const draggedIndex = newPhotos.findIndex(p => p.id === dragItem.current);
+    const overIndex = newPhotos.findIndex(p => p.id === dragOverItem.current);
+    
+    if (draggedIndex !== -1 && overIndex !== -1) {
+      const draggedItemContent = newPhotos[draggedIndex];
+      newPhotos.splice(draggedIndex, 1);
+      newPhotos.splice(overIndex, 0, draggedItemContent);
       
-      // SOLO hacemos el cambio si ambos índices son válidos (evita corrupción de datos)
-      if (draggedIndex !== -1 && overIndex !== -1) {
-        const draggedItemContent = newPhotos[draggedIndex];
-        newPhotos.splice(draggedIndex, 1);
-        newPhotos.splice(overIndex, 0, draggedItemContent);
-        localStorage.setItem('albumAventuras', JSON.stringify(newPhotos));
-      }
-      return newPhotos;
-    });
+      // Update UI immediately for optimism
+      setLocalPhotos(newPhotos);
+      
+      // We are ignoring persistent reordering in DB for simplicity right now 
+      // since the DB orders by created_at. To do real reordering in DB we'd need an `order_index` column.
+    }
 
     dragItem.current = null;
     dragOverItem.current = null;
@@ -119,34 +174,6 @@ function App() {
     setSelectedPhoto(photo);
   };
 
-  // Initialize from LocalStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('albumAventuras');
-    let parsedData = [];
-    
-    try {
-      if (saved) {
-        parsedData = JSON.parse(saved);
-        // Filtrar datos corruptos (null o undefined) en caso de fallos anteriores
-        parsedData = parsedData.filter(p => p !== null && typeof p === 'object' && p.id);
-      } else {
-        parsedData = initialPhotos;
-      }
-    } catch (e) {
-      parsedData = initialPhotos;
-    }
-    
-    // Normalize data: ensure all items use `urls` array instead of just `url` string
-    const normalized = parsedData.map(p => ({
-      ...p,
-      urls: p.urls || (p.url ? [p.url] : [])
-    }));
-    
-    setLocalPhotos(normalized);
-    // Reparar localStorage si estaba roto
-    localStorage.setItem('albumAventuras', JSON.stringify(normalized));
-  }, []);
-
   const closeModal = () => {
     setSelectedPhoto(null);
     setIsEditing(false);
@@ -156,125 +183,151 @@ function App() {
     ? localPhotos.filter(p => p.category === activeCategory) 
     : [];
 
-  // Función genérica para procesar y comprimir múltiples imágenes
-  const processImages = async (files) => {
-    const promises = Array.from(files).map(file => {
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const img = new Image();
-          img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const MAX_WIDTH = 800;
-            let scaleSize = 1;
-            if (img.width > MAX_WIDTH) {
-              scaleSize = MAX_WIDTH / img.width;
-            }
-            canvas.width = img.width * scaleSize;
-            canvas.height = img.height * scaleSize;
-            
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            resolve(canvas.toDataURL('image/jpeg', 0.7));
-          };
-          img.src = event.target.result;
-        };
-        reader.readAsDataURL(file);
-      });
-    });
-    return Promise.all(promises);
+  const uploadImagesToSupabase = async (files) => {
+    const urls = [];
+    for (const file of Array.from(files)) {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
+      const filePath = `photos/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('album_photos')
+        .upload(filePath, file);
+
+      if (uploadError) {
+        console.error('Error uploading image:', uploadError);
+        continue;
+      }
+
+      const { data } = supabase.storage
+        .from('album_photos')
+        .getPublicUrl(filePath);
+
+      urls.push(data.publicUrl);
+    }
+    return urls;
   };
 
-  // Crear una nueva aventura con una o varias fotos
   const handleImageUpload = async (e) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const dataUrls = await processImages(files);
+    alert("Subiendo fotos a la nube... esto puede tardar unos segundos.");
+    const publicUrls = await uploadImagesToSupabase(files);
     
+    if (publicUrls.length === 0) return;
+
     const newAdventure = {
-      id: Date.now(), // ID único
-      urls: dataUrls,
+      category: activeCategory,
       descripcion: "Nueva aventura... (Haz clic para editar)",
-      category: activeCategory
+      urls: publicUrls
     };
 
-    const updatedPhotos = [...localPhotos, newAdventure];
-    setLocalPhotos(updatedPhotos);
-    localStorage.setItem('albumAventuras', JSON.stringify(updatedPhotos));
-    
-    e.target.value = null; // Limpiar input
-  };
+    const { data, error } = await supabase
+      .from('adventures')
+      .insert([newAdventure])
+      .select();
 
-  // Agregar más fotos a la aventura que ya está abierta en el modal
-  const handleAddPhotosToExisting = async (e) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    const newUrls = await processImages(files);
-    
-    const updatedPhotos = localPhotos.map(p => {
-      if (p.id === selectedPhoto.id) {
-        return { ...p, urls: [...p.urls, ...newUrls] };
-      }
-      return p;
-    });
-    
-    setLocalPhotos(updatedPhotos);
-    localStorage.setItem('albumAventuras', JSON.stringify(updatedPhotos));
-    
-    // Actualizar estado del modal
-    setSelectedPhoto(prev => ({
-      ...prev,
-      urls: [...prev.urls, ...newUrls]
-    }));
+    if (error) {
+      console.error('Error creating adventure:', error);
+      alert('Hubo un error al crear la aventura');
+    } else if (data) {
+      setLocalPhotos([...localPhotos, data[0]]);
+    }
     
     e.target.value = null;
   };
 
-  const handleSaveDescription = () => {
-    const updated = localPhotos.map(p => 
-      p.id === selectedPhoto.id ? { ...p, descripcion: editDesc } : p
-    );
-    setLocalPhotos(updated);
-    localStorage.setItem('albumAventuras', JSON.stringify(updated));
-    setSelectedPhoto({ ...selectedPhoto, descripcion: editDesc });
-    setIsEditing(false);
+  const handleAddPhotosToExisting = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    alert("Subiendo más fotos a la nube...");
+    const newUrls = await uploadImagesToSupabase(files);
+    if (newUrls.length === 0) return;
+
+    const updatedUrls = [...(selectedPhoto.urls || []), ...newUrls];
+
+    const { error } = await supabase
+      .from('adventures')
+      .update({ urls: updatedUrls })
+      .eq('id', selectedPhoto.id);
+
+    if (error) {
+      console.error('Error updating photos:', error);
+    } else {
+      const updatedPhotos = localPhotos.map(p => 
+        p.id === selectedPhoto.id ? { ...p, urls: updatedUrls } : p
+      );
+      setLocalPhotos(updatedPhotos);
+      setSelectedPhoto(prev => ({ ...prev, urls: updatedUrls }));
+    }
+    
+    e.target.value = null;
   };
 
-  // Borrar toda la aventura
-  const handleDeleteAdventure = () => {
-    if (window.confirm('¿Estás seguro de que deseas despegar toda esta aventura del álbum?')) {
-      const updated = localPhotos.filter(p => p.id !== selectedPhoto.id);
+  const handleSaveDescription = async () => {
+    const { error } = await supabase
+      .from('adventures')
+      .update({ descripcion: editDesc })
+      .eq('id', selectedPhoto.id);
+
+    if (error) {
+      console.error('Error updating description:', error);
+    } else {
+      const updated = localPhotos.map(p => 
+        p.id === selectedPhoto.id ? { ...p, descripcion: editDesc } : p
+      );
       setLocalPhotos(updated);
-      localStorage.setItem('albumAventuras', JSON.stringify(updated));
-      closeModal();
+      setSelectedPhoto({ ...selectedPhoto, descripcion: editDesc });
+      setIsEditing(false);
     }
   };
 
-  // Borrar una foto específica dentro de la aventura
-  const handleDeleteSpecificPhoto = (indexToRemove) => {
+  const handleDeleteAdventure = async () => {
+    if (window.confirm('¿Estás seguro de que deseas despegar toda esta aventura del álbum (y de la nube)?')) {
+      const { error } = await supabase
+        .from('adventures')
+        .delete()
+        .eq('id', selectedPhoto.id);
+
+      if (error) {
+        console.error('Error deleting:', error);
+      } else {
+        setLocalPhotos(localPhotos.filter(p => p.id !== selectedPhoto.id));
+        closeModal();
+      }
+    }
+  };
+
+  const handleDeleteSpecificPhoto = async (indexToRemove) => {
     if (window.confirm('¿Quitar esta foto específica de la aventura?')) {
       const newUrls = selectedPhoto.urls.filter((_, i) => i !== indexToRemove);
       
       if (newUrls.length === 0) {
-        // Si no quedan fotos, borramos toda la aventura
         handleDeleteAdventure();
         return;
       }
       
-      const updated = localPhotos.map(p => 
-        p.id === selectedPhoto.id ? { ...p, urls: newUrls } : p
-      );
-      setLocalPhotos(updated);
-      localStorage.setItem('albumAventuras', JSON.stringify(updated));
-      setSelectedPhoto({ ...selectedPhoto, urls: newUrls });
+      const { error } = await supabase
+        .from('adventures')
+        .update({ urls: newUrls })
+        .eq('id', selectedPhoto.id);
+
+      if (error) {
+        console.error('Error removing specific photo:', error);
+      } else {
+        const updated = localPhotos.map(p => 
+          p.id === selectedPhoto.id ? { ...p, urls: newUrls } : p
+        );
+        setLocalPhotos(updated);
+        setSelectedPhoto({ ...selectedPhoto, urls: newUrls });
+      }
     }
   };
 
   return (
     <div className="min-h-screen font-handwriting selection:bg-[#d4a373] text-[#4a3f35] overflow-x-hidden">
-      {/* Portada / Cabecera */}
       <header className={`text-center px-4 relative flex flex-col items-center ${activeCategory ? 'py-6 md:py-8' : 'py-6 md:py-10'}`}>
         {!activeCategory ? (
           <div className="flex flex-col items-center animate-in zoom-in duration-500">
@@ -303,7 +356,6 @@ function App() {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
         {!activeCategory ? (
-          // Vista de Índice / Secciones
           <div className="flex flex-col sm:flex-row flex-wrap justify-center gap-8 md:gap-16 mt-6 md:mt-10 items-center">
             {categories.map((cat, i) => (
               <div 
@@ -321,7 +373,6 @@ function App() {
             ))}
           </div>
         ) : (
-          // Vista de Aventuras (Figuritas)
           <div className="animate-in fade-in duration-500">
             <h2 className="text-5xl md:text-7xl font-title font-bold text-center mb-10 md:mb-16 text-[#6c4224]">
               {categories.find(c => c.id === activeCategory)?.label}
@@ -336,89 +387,85 @@ function App() {
               onChange={handleImageUpload}
             />
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-10 md:gap-16 items-center">
-              {/* Aventuras Existentes */}
-              {filteredPhotos.map((photo, i) => {
-                const coverImage = photo.urls && photo.urls.length > 0 ? photo.urls[0] : "";
-                return (
-                  <div 
-                    key={photo.id} 
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, photo.id)}
-                    onDragEnter={(e) => handleDragEnter(e, photo.id)}
-                    onDragEnd={handleDragEnd}
-                    onDragOver={handleDragOver}
-                    onDrop={(e) => { e.preventDefault(); dragOverItem.current = photo.id; }}
-                    className="relative bg-[#fffdf5] p-3 pb-14 md:p-5 md:pb-20 shadow-lg border border-gray-200 cursor-pointer hover:scale-105 hover:shadow-2xl transition-all duration-300 hover:z-10 group flex flex-col active:cursor-grabbing"
-                    style={{ transform: `rotate(${i % 2 === 0 ? '2' : '-3'}deg)` }}
-                    onClick={() => handlePhotoClick(photo)}
-                    title="Arrastra para reordenar o haz clic para ver"
-                  >
-                    <div className="tape"></div>
-                    {/* Indicador de múltiples fotos */}
-                    {photo.urls && photo.urls.length > 1 && (
-                      <div className="absolute top-4 right-4 z-20 bg-black/60 text-white text-xs font-sans px-2 py-1 rounded-full shadow-md">
-                        1/{photo.urls.length}
-                      </div>
-                    )}
-                    <div className="w-full aspect-square overflow-hidden bg-neutral-200 shadow-inner ring-1 ring-black/5 relative pointer-events-none">
-                      {coverImage && (
-                        <img 
-                          src={coverImage} 
-                          alt={photo.descripcion}
-                          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                          loading="lazy"
-                        />
-                      )}
-                    </div>
-                    <div className="absolute bottom-2 md:bottom-5 left-0 right-0 text-center px-4 pointer-events-none">
-                      <p className="text-2xl md:text-3xl text-[#3b2f2f] truncate px-2">
-                        {photo.descripcion}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Espacio Vacío / Agregar Nueva Aventura */}
-              <div 
-                className="relative bg-transparent border-4 border-dashed border-[#8c5a35]/30 p-3 pb-14 md:p-5 md:pb-20 shadow-none cursor-pointer hover:bg-[#fffdf5]/50 hover:shadow-lg hover:border-[#8c5a35]/60 transition-all duration-300 flex flex-col justify-center items-center text-center opacity-80 hover:opacity-100 min-h-[300px]"
-                style={{ transform: `rotate(${filteredPhotos.length % 2 === 0 ? '3' : '-2'}deg)` }}
-                onClick={() => fileInputRef.current?.click()}
-                title="Pegar nueva aventura"
-              >
-                <div className="text-6xl md:text-7xl text-[#8c5a35]/40 mb-2 transition-transform hover:scale-110">+</div>
-                <p className="text-3xl md:text-4xl font-handwriting text-[#8c5a35]">Nueva aventura</p>
+            {isLoading ? (
+              <div className="text-center text-3xl font-title text-[#8c5a35] animate-pulse">
+                Cargando aventuras desde la nube...
               </div>
-            </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-10 md:gap-16 items-center">
+                {filteredPhotos.map((photo, i) => {
+                  const coverImage = photo.urls && photo.urls.length > 0 ? photo.urls[0] : "";
+                  return (
+                    <div 
+                      key={photo.id} 
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, photo.id)}
+                      onDragEnter={(e) => handleDragEnter(e, photo.id)}
+                      onDragEnd={handleDragEnd}
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => { e.preventDefault(); dragOverItem.current = photo.id; }}
+                      className="relative bg-[#fffdf5] p-3 pb-14 md:p-5 md:pb-20 shadow-lg border border-gray-200 cursor-pointer hover:scale-105 hover:shadow-2xl transition-all duration-300 hover:z-10 group flex flex-col active:cursor-grabbing"
+                      style={{ transform: `rotate(${i % 2 === 0 ? '2' : '-3'}deg)` }}
+                      onClick={() => handlePhotoClick(photo)}
+                      title="Arrastra para reordenar (local) o haz clic para ver"
+                    >
+                      <div className="tape"></div>
+                      {photo.urls && photo.urls.length > 1 && (
+                        <div className="absolute top-4 right-4 z-20 bg-black/60 text-white text-xs font-sans px-2 py-1 rounded-full shadow-md">
+                          1/{photo.urls.length}
+                        </div>
+                      )}
+                      <div className="w-full aspect-square overflow-hidden bg-neutral-200 shadow-inner ring-1 ring-black/5 relative pointer-events-none">
+                        {coverImage && (
+                          <img 
+                            src={coverImage} 
+                            alt={photo.descripcion}
+                            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                            loading="lazy"
+                          />
+                        )}
+                      </div>
+                      <div className="absolute bottom-2 md:bottom-5 left-0 right-0 text-center px-4 pointer-events-none">
+                        <p className="text-2xl md:text-3xl text-[#3b2f2f] truncate px-2">
+                          {photo.descripcion}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div 
+                  className="relative bg-transparent border-4 border-dashed border-[#8c5a35]/30 p-3 pb-14 md:p-5 md:pb-20 shadow-none cursor-pointer hover:bg-[#fffdf5]/50 hover:shadow-lg hover:border-[#8c5a35]/60 transition-all duration-300 flex flex-col justify-center items-center text-center opacity-80 hover:opacity-100 min-h-[300px]"
+                  style={{ transform: `rotate(${filteredPhotos.length % 2 === 0 ? '3' : '-2'}deg)` }}
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Pegar nueva aventura en la nube"
+                >
+                  <div className="text-6xl md:text-7xl text-[#8c5a35]/40 mb-2 transition-transform hover:scale-110">+</div>
+                  <p className="text-3xl md:text-4xl font-handwriting text-[#8c5a35]">Nueva aventura</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>
 
-      {/* Footer de Herramientas (Solo visible en el inicio) */}
+      {/* Footer de Migración (Solo visible en el inicio) */}
       {!activeCategory && (
-        <footer className="text-center pb-12 opacity-40 hover:opacity-100 transition-opacity duration-300 font-sans flex flex-col items-center">
-          <p className="text-[#8c5a35] text-sm mb-3">Opciones del Álbum</p>
+        <footer className="text-center pb-12 opacity-40 hover:opacity-100 transition-opacity duration-300 font-sans flex flex-col items-center mt-10">
+          <p className="text-[#8c5a35] text-sm mb-3">Herramientas</p>
           <div className="flex gap-4">
-            <button 
-              onClick={exportBackup}
-              className="text-xs bg-[#eaddc5] text-[#5c4033] px-4 py-2 rounded-full shadow-sm hover:bg-[#d4a373] hover:text-white transition-colors border border-[#8c5a35]/20"
-              title="Descargar una copia de seguridad de tus fotos"
-            >
-              Exportar Backup
-            </button>
             <label 
               className="text-xs bg-[#eaddc5] text-[#5c4033] px-4 py-2 rounded-full shadow-sm hover:bg-[#d4a373] hover:text-white transition-colors cursor-pointer border border-[#8c5a35]/20"
-              title="Cargar un archivo de copia de seguridad"
+              title="Migrar tus fotos locales a la nube"
             >
-              Importar Backup
+              Importar Backup a la Nube
               <input type="file" accept=".json" className="hidden" onChange={importBackup} />
             </label>
           </div>
         </footer>
       )}
 
-      {/* Modal Fotografía Extendida con Edición y Múltiples Fotos */}
+      {/* Modal Fotografía Extendida */}
       {selectedPhoto && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-sm transition-opacity"
@@ -438,7 +485,6 @@ function App() {
               &times;
             </button>
             
-            {/* Galería de fotos (Scroll vertical) */}
             <div className="w-full md:w-3/5 bg-gray-200 shadow-inner border border-gray-300 p-2 relative mt-4 md:mt-0 flex flex-col gap-4 overflow-y-auto max-h-[50vh] md:max-h-[75vh] snap-y snap-mandatory rounded-sm">
               {selectedPhoto.urls && selectedPhoto.urls.map((u, idx) => (
                 <div key={idx} className="w-full relative group snap-center bg-gray-100 flex-shrink-0 flex items-center justify-center p-1 border border-gray-200">
@@ -447,7 +493,6 @@ function App() {
                     alt={`Aventura ${idx + 1}`}
                     className="w-full h-auto max-h-[50vh] md:max-h-[70vh] object-contain shadow-sm"
                   />
-                  {/* Botón flotante para borrar foto individual */}
                   <button 
                     onClick={(e) => { e.stopPropagation(); handleDeleteSpecificPhoto(idx); }}
                     className="absolute top-2 right-2 bg-red-600/80 hover:bg-red-600 text-white w-8 h-8 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-md"
@@ -461,10 +506,8 @@ function App() {
               ))}
             </div>
             
-            {/* Panel Lateral: Descripción y Botones */}
             <div className="w-full md:w-2/5 p-4 md:p-10 flex flex-col justify-start md:justify-center relative bg-[#fffdf5]">
               
-              {/* Input escondido para agregar MÁS fotos a esta aventura */}
               <input 
                 type="file" 
                 accept="image/*"
